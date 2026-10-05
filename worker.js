@@ -238,14 +238,71 @@ export class FlipLobby {
   inventory(id) { return this.pages(id, `/apisite/inventory/v1/users/${id}/assets/collectibles?limit=100&assetType=null&cursor=`); }
   inbound(id) { return this.pages(id, '/apisite/trades/v1/trades/inbound?cursor='); }
   async values() {
-    if (this.valuesCache && Date.now() - this.valuesCache.time < 60000) return this.valuesCache;
-    let r;
-    try { r = await fetch(VALUES, { headers: { Accept: 'application/json' }, redirect: 'error', signal: AbortSignal.timeout(10000) }); }
-    catch { throw new UpstreamError('Heximons values are unavailable. Try again shortly.'); }
-    if (!r.ok) throw new UpstreamError('Heximons values are unavailable.');
-    const data = await r.json();
-    if (!data.assets || typeof data.assets !== 'object' || Array.isArray(data.assets)) throw new UpstreamError('Unexpected Heximons value format.');
-    return this.valuesCache = { data, time: Date.now() };
+    if (this.valuesCache && Date.now() - this.valuesCache.time < 60000) {
+      return this.valuesCache;
+    }
+
+    const signal = AbortSignal.timeout(25000);
+    const started = Date.now();
+    let response, text;
+
+    try {
+      response = await fetch(VALUES, {
+        headers: {
+          Accept: 'application/json',
+          'Cache-Control': 'no-store'
+        },
+        redirect: 'manual',
+        signal
+      });
+      text = await response.text();
+    } catch (error) {
+      throw new UpstreamError(
+        'Heximons connection failed: ' + JSON.stringify({
+          endpoint: VALUES,
+          status: response?.status ?? null,
+          elapsedMs: Date.now() - started,
+          timedOut: signal.aborted,
+          name: String(error?.name || 'Error'),
+          message: String(error?.message || error).slice(0, 1000)
+        })
+      );
+    }
+
+    const failure = reason => new UpstreamError(
+      'Heximons response: ' + JSON.stringify({
+        reason,
+        endpoint: VALUES,
+        status: response.status,
+        statusText: response.statusText,
+        contentType: response.headers.get('content-type'),
+        cfRay: response.headers.get('cf-ray'),
+        cfMitigated: response.headers.get('cf-mitigated'),
+        elapsedMs: Date.now() - started,
+        body: text.slice(0, 3000),
+        truncated: text.length > 3000
+      })
+    );
+
+    if (!response.ok) throw failure('HTTP error');
+
+    let data;
+    try {
+      data = JSON.parse(text);
+    } catch {
+      throw failure('Response was not valid JSON');
+    }
+
+    if (
+      !data?.assets ||
+      typeof data.assets !== 'object' ||
+      Array.isArray(data.assets)
+    ) {
+      throw failure('JSON did not contain the expected assets map');
+    }
+
+    this.valuesCache = { data, time: Date.now() };
+    return this.valuesCache;
   }
   valued(items, values) {
     return items.map(x => {
