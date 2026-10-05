@@ -1,0 +1,12 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "hexium-flip",
+  "main": "worker.js",
+  "compatibility_date": "2026-10-04",
+  "workers_dev": true,
+  "durable_objects": {
+    "bindings": [{ "name": "LOBBY", "class_name": "FlipLobby" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["FlipLobby"] }],
+  "observability": { "enabled": false }
+}
