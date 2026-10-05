@@ -130,16 +130,74 @@ export class FlipLobby {
     return { user, cookie: new TextDecoder().decode(bytes) };
   }
   async raw(cookie, path, method = 'GET', body, csrf) {
+    // Diagnostics exclude request headers and redact this connection's secrets.
+    const redact = value => {
+      let text = String(value ?? '');
+      for (const secret of [cookie, csrf]) if (secret) {
+        for (const form of new Set([secret, encodeURIComponent(secret), JSON.stringify(secret).slice(1, -1)])) {
+          text = text.split(form).join('[REDACTED]');
+        }
+      }
+      text = text.replace(/(\.ROBLOSECURITY\s*=\s*)[^;\s"<>]+/gi, '$1[REDACTED]');
+      return text.slice(0, 3000);
+    };
+    const signal = AbortSignal.timeout(25000);
+    const started = Date.now();
     let response;
     try {
       response = await fetch(HEX + path, {
-        method, headers: { Accept: 'application/json', Cookie: `.ROBLOSECURITY=${cookie}`,
+        method,
+        headers: {
+          Accept: 'application/json',
+          Cookie: `.ROBLOSECURITY=${cookie}`,
+          'Cache-Control': 'no-store',
           ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
-          ...(csrf ? { 'x-csrf-token': csrf } : {}) },
-        body: body === undefined ? undefined : JSON.stringify(body), redirect: 'error',
-        cache: 'no-store', signal: AbortSignal.timeout(10000)
+          ...(csrf ? { 'x-csrf-token': csrf } : {})
+        },
+        body: body === undefined ? undefined : JSON.stringify(body),
+        // Manual redirects show their HTTP status without forwarding the cookie.
+        redirect: 'manual',
+        signal
       });
-    } catch { throw new UpstreamError('Hexium request timed out or could not connect.', method === 'POST'); }
+    } catch (error) {
+      const diagnostic = {
+        source: 'Cloudflare fetch exception; no Hexium HTTP response received',
+        endpoint: HEX + path,
+        elapsedMs: Date.now() - started,
+        timedOut: signal.aborted,
+        name: String(error?.name || 'Error'),
+        message: redact(error?.message || error)
+      };
+      throw new UpstreamError('Hexium connection failed: ' + JSON.stringify(diagnostic), method === 'POST');
+    }
+
+    if (path === '/apisite/users/v1/users/authenticated') {
+      let responseBody;
+      try { responseBody = await response.clone().text(); }
+      catch (error) {
+        throw new UpstreamError('Hexium login response body failed: ' + JSON.stringify({
+          status: response.status,
+          contentType: response.headers.get('content-type'),
+          name: String(error?.name || 'Error'),
+          message: redact(error?.message || error)
+        }));
+      }
+      let validJson = false;
+      try { JSON.parse(responseBody); validJson = true; } catch {}
+      if (!response.ok || !validJson) {
+        const diagnostic = {
+          source: 'Hexium HTTP response',
+          endpoint: HEX + path,
+          status: response.status,
+          statusText: response.statusText,
+          contentType: response.headers.get('content-type'),
+          elapsedMs: Date.now() - started,
+          body: redact(responseBody),
+          truncated: responseBody.length > 3000
+        };
+        throw new UpstreamError('Hexium login response: ' + JSON.stringify(diagnostic));
+      }
+    }
     return response;
   }
   async api(id, path, method = 'GET', body) {
@@ -153,7 +211,7 @@ export class FlipLobby {
     }
     if (!r.ok) {
       await r.body?.cancel();
-      const ambiguous = r.status >= 500 || r.status === 408;
+      const ambiguous = r.status >= 500 || r.status === 408 || (r.status >= 300 && r.status < 400);
       throw new UpstreamError(`Hexium returned HTTP ${r.status}.`, method === 'POST' && ambiguous, method === 'POST' && !ambiguous);
     }
     const text = await r.text();
