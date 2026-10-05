@@ -1,4 +1,4 @@
- Hexium Flip — Cloudflare Module Worker + SQLite Durable Object.
+// Hexium Flip — Cloudflare Module Worker + SQLite Durable Object.
 // Deploy with the included wrangler.jsonc. Never put login cookies in source.
 const HEX = 'https://hexium.zip';
 const VALUES = 'https://heximons.lol/api/items/v3/itemdetails';
